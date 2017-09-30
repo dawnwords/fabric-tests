@@ -16,13 +16,12 @@ from behave import *
 import os
 import random
 import subprocess
-import tempfile
 import time
-import socket
+import shutil
+
 
 @step(u'a fabric peer and orderer')
 def step_impl(context):
-
     # create network
     context.network_name = 'behave_' + ''.join(random.choice('0123456789') for i in xrange(7))
     context.network_id = subprocess.check_output([
@@ -33,9 +32,9 @@ def step_impl(context):
     orderer_genesis_block = os.path.join(context.scenario_temp_dir, 'genesis.block')
     print('Orderer system channel genesis block will be written to: {0}'.format(orderer_genesis_block))
     configtxgen_env = os.environ.copy()
-    configtxgen_env['CONFIGTX_ORDERER_ADDRESSES']='[orderer:7050]'
-    configtxgen_env['CONFIGTX_ORDERER_BATCHSIZE_MAXMESSAGECOUNT']='1'
-    configtxgen_env['CONFIGTX_ORDERER_BATCHTIMEOUT']='1s'
+    configtxgen_env['CONFIGTX_ORDERER_ADDRESSES'] = '[orderer:7050]'
+    configtxgen_env['CONFIGTX_ORDERER_BATCHSIZE_MAXMESSAGECOUNT'] = '1'
+    configtxgen_env['CONFIGTX_ORDERER_BATCHTIMEOUT'] = '1s'
     try:
         print(subprocess.check_output([
             context.configtxgen_exe,
@@ -60,6 +59,8 @@ def step_impl(context):
         'hyperledger/fabric-orderer'
     ]).strip()
     context.orderer_address = subprocess.check_output(['docker', 'port', context.orderer_container_id, '7050']).strip()
+    context.orderer_address = "localhost:" + context.orderer_address.split(":")[1]
+    print('orderer address:{0}', context.orderer_address)
 
     # start peer
     context.peer_container_id = subprocess.check_output([
@@ -86,8 +87,9 @@ def step_impl(context):
     # create channel creation tx for test channel
     context.channel_id = 'behave' + ''.join(random.choice('0123456789') for i in xrange(7))
     channel_create_tx = os.path.join(context.scenario_temp_dir, context.channel_id + '.tx')
-    print(channel_create_tx)
-    print('The transaction to create the {0} channel will be written to: {1}'.format(context.channel_id, channel_create_tx))
+    print("channel tx path: " + channel_create_tx)
+    print('The transaction to create the {0} channel will be written to: {1}'.format(context.channel_id,
+                                                                                     channel_create_tx))
     try:
         print(subprocess.check_output([
             context.configtxgen_exe,
@@ -113,8 +115,10 @@ def step_impl(context):
         raise
 
     # move genesis block to temp dir (so it will get cleanup up when we're done)
+    origin_channel_genesis_block = os.path.join(context.fabric_dir, context.channel_id + '.block')
     channel_genesis_block = os.path.join(context.scenario_temp_dir, context.channel_id + '.block')
-    os.rename(os.path.join(context.fabric_dir, context.channel_id + '.block'), channel_genesis_block)
+    print("move channel genesis block: {0} -> {1}".format(origin_channel_genesis_block, channel_genesis_block))
+    shutil.move(origin_channel_genesis_block, channel_genesis_block)
 
     # join peer to channel
     try:
@@ -126,6 +130,7 @@ def step_impl(context):
     except subprocess.CalledProcessError as e:
         print(e.output)
         raise
+
 
 @step(r'a (?P<lang>java|go|golang|car) chaincode is installed via the CLI')
 def step_impl(context, lang):
@@ -142,15 +147,19 @@ def step_impl(context, lang):
             '--version', context.chaincode_id_version,
             '--lang', context.chaincode_lang
         ], cwd=context.fabric_dir, stderr=subprocess.STDOUT, env=context.peer_env))
+        print("installed end")
     except subprocess.CalledProcessError as e:
         print(e.output)
         raise
 
+
 @step(u'the chaincode is installed on the peer')
 def step_impl(context):
     print(subprocess.check_output([
-        'docker', 'exec', context.peer_container_id, 'ls', '-l', '/var/hyperledger/production/chaincodes/' + context.chaincode_id_name + '.' + context.chaincode_id_version
+        'docker', 'exec', context.peer_container_id, 'ls', '-l',
+        '/var/hyperledger/production/chaincodes/' + context.chaincode_id_name + '.' + context.chaincode_id_version
     ]))
+
 
 @step(r'version (?P<version>\S+) of a (?P<lang>java|go|golang|car) chaincode is installed via the CLI')
 def step_impl(context, version, lang):
@@ -171,6 +180,7 @@ def step_impl(context, version, lang):
         print(e.output)
         raise
 
+
 @step(r'installing version (?P<version>\S+) of the same chaincode via the CLI will fail')
 def step_impl(context, version):
     assert getattr(context, 'chaincode_id_name', None), 'No chaincode previously installed.'
@@ -188,6 +198,7 @@ def step_impl(context, version):
     except subprocess.CalledProcessError as e:
         print(e.output)
         raise
+
 
 @step(r'the chaincode (?:can be|is) instantiated via the CLI')
 def step_impl(context):
@@ -229,6 +240,7 @@ def step_impl(context):
         print(e.output)
         raise
 
+
 @step(r'the chaincode state is queried via the CLI')
 def step_impl(context):
     assert getattr(context, 'chaincode_id_name', None), 'No chaincode previously installed.'
@@ -247,14 +259,21 @@ def step_impl(context):
         print(e.output)
         raise
 
-def get_chaincode_query_result(query_commmand_output):
-    return [line.split(':',1)[1].strip() for line in query_commmand_output.splitlines() if line.startswith('Query Result:')][0]
+
+def get_chaincode_query_result(query_command_output):
+    return \
+        [line.split(':', 1)[1].strip() for line in query_command_output.splitlines() if
+         line.startswith('Query Result:')][
+            0]
 
 
 @step(r'the expected query result is returned')
 def step_impl(context):
-    expected_query_result = context.sample_chaincode_query_results[context.chaincode_lang]['after_' + context.last_function]
-    assert context.query_result == expected_query_result, "Expected: %s, Actual: %s" % (expected_query_result, context.query_result)
+    expected_query_result = context.sample_chaincode_query_results[context.chaincode_lang][
+        'after_' + context.last_function]
+    assert context.query_result == expected_query_result, "Expected: %s, Actual: %s" % (
+        expected_query_result, context.query_result)
+
 
 @step(r'the chaincode state is updated')
 def step_impl(context):
